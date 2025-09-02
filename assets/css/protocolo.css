@@ -1,0 +1,357 @@
+/* ===== VARIÁVEIS CSS E RESET ===== */
+.mn-form {
+  /* Tipografia */
+  --fs-title: 1.05rem;
+  --fs-label: 0.93rem;
+  --fs-input: 0.93rem;
+  --fs-helper: 0.80rem;
+  
+  /* Cores */
+  --color-text-primary: #1B1B1F;
+  --color-text-secondary: #414853;
+  --color-text-muted: #6B7280;
+  --color-border: #D8E0EA;
+  --color-bg-input: #fff;
+  --color-bg-file: #F8F9FA;
+  --color-accent: #0B57D0;
+  
+  /* Espaçamentos */
+  --spacing-xs: 4px;
+  --spacing-sm: 6px;
+  --spacing-md: 10px;
+  --spacing-lg: 12px;
+  --spacing-xl: 16px;
+  
+  /* Altura padrão dos elementos */
+  --input-height: 44px;
+  
+  /* Border radius */
+  --radius: 12px;
+}
+
+.mn-form *,
+.mn-form *::before,
+.mn-form *::after {
+  box-sizing: border-box;
+}
+
+.mn-form h1,
+.mn-form h2,
+.mn-form h3 {
+  font-size: inherit;
+  font-weight: inherit;
+  margin: 0;
+  padding: 0;
+}
+
+/* ===== SEÇÕES E TIPOGRAFIA ===== */
+.mn-section {
+  font-size: var(--fs-title);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.mn-numero {
+  font-size: var(--fs-title);
+  font-weight: 800;
+  color: var(--color-text-primary);
+}
+
+/* ===== SISTEMA DE GRID RESPONSIVO ===== */
+.mn-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: var(--spacing-xl);
+  align-items: start;
+  width: 100%;
+}
+
+/* Classes de coluna */
+.mn-col-12 { grid-column: span 12; }
+.mn-col-8 { grid-column: span 8; }
+.mn-col-6 { grid-column: span 6; }
+.mn-col-4 { grid-column: span 4; }
+.mn-col-3 { grid-column: span 3; }
+
+/* ===== GRUPOS DE FORMULÁRIO ===== */
+.mn-form-group {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
+.mn-form-group label {
+  font-size: var(--fs-label);
+  font-weight: 700;
+  color: var(--color-text-secondary);
+  margin-bottom: var(--spacing-sm);
+  line-height: 1.4;
+}
+
+.mn-form-group .helper-text {
+  font-size: var(--fs-helper);
+  color: var(--color-text-muted);
+  margin-top: var(--spacing-xs);
+  line-height: 1.4;
+}
+
+/* ===== CAMPOS DE ENTRADA ===== */
+.mn-form-group input,
+.mn-form-group select,
+.mn-form-group textarea {
+  font-family: inherit;
+  font-size: var(--fs-input);
+  color: var(--color-text-primary);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+/* Inputs padrão e selects */
+.mn-form-group input:not([type="file"]):not([type="checkbox"]):not([type="radio"]),
+.mn-form-group select {
+  height: var(--input-height);
+  min-height: var(--input-height);
+  line-height: 1.2;
+  padding: var(--spacing-md) var(--spacing-lg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-bg-input);
+  width: 100%;
+  outline: none;
+}
+
+/* Estados de foco */
+.mn-form-group input:not([type="file"]):not([type="checkbox"]):not([type="radio"]):focus,
+.mn-form-group select:focus,
+.mn-form-group textarea:focus {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px rgba(11, 87, 208, 0.1);
+}
+
+/* Estados de hover */
+.mn-form-group input:not([type="file"]):not([type="checkbox"]):not([type="radio"]):hover,
+.mn-form-group select:hover,
+.mn-form-group textarea:hover {
+  border-color: #B8C5D1;
+}
+
+/* Textarea específico */
+.mn-form-group textarea {
+  min-height: 120px;
+  padding: var(--spacing-md) var(--spacing-lg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-bg-input);
+  width: 100%;
+  outline: none;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+/* ===== SELECT CUSTOMIZADO ===== */
+.mn-form-group select {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  padding-right: 40px;
+  background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="%23333" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>');
+  background-repeat: no-repeat;
+  background-position: right var(--spacing-lg) center;
+  background-size: 16px;
+  cursor: pointer;
+}
+
+.mn-form-group select:focus {
+  background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="%230B57D0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>');
+}
+
+/* ===== COMPONENTE DE ARQUIVO ===== */
+.mn-file-input {
+  position: relative;
+  width: 100%;
+}
+
+.mn-file-input input[type="file"] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+  z-index: 1;
+}
+
+.mn-file-label {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  min-height: var(--input-height);
+  border: 2px dashed var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--spacing-md) var(--spacing-lg);
+  background: var(--color-bg-file);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: var(--fs-input);
+  color: var(--color-text-muted);
+}
+
+.mn-file-label:hover {
+  border-color: #B8C5D1;
+  background: #F1F3F4;
+}
+
+.mn-file-input:focus-within .mn-file-label {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px rgba(11, 87, 208, 0.1);
+}
+
+.mn-file-selected {
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
+/* Ícone de arquivo */
+.mn-file-label::before {
+  content: "📁";
+  font-size: 1.2em;
+}
+
+/* ===== BOTÕES ===== */
+.mn-btn {
+  min-height: var(--input-height);
+  height: var(--input-height);
+  padding: var(--spacing-md) var(--spacing-xl);
+  border: none;
+  border-radius: var(--radius);
+  font-size: var(--fs-input);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-sm);
+  text-decoration: none;
+  outline: none;
+}
+
+.mn-btn:focus {
+  box-shadow: 0 0 0 3px rgba(11, 87, 208, 0.2);
+}
+
+.mn-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ===== ESTADOS DE VALIDAÇÃO ===== */
+.mn-form-group.error input,
+.mn-form-group.error select,
+.mn-form-group.error textarea {
+  border-color: #DC2626;
+}
+
+.mn-form-group.error .helper-text {
+  color: #DC2626;
+}
+
+.mn-form-group.success input,
+.mn-form-group.success select,
+.mn-form-group.success textarea {
+  border-color: #059669;
+}
+
+/* ===== RESPONSIVIDADE APRIMORADA ===== */
+@media (max-width: 950px) {
+  .mn-col-3,
+  .mn-col-4,
+  .mn-col-6,
+  .mn-col-8 {
+    grid-column: span 12;
+  }
+  
+  .mn-grid {
+    gap: var(--spacing-lg);
+  }
+}
+
+@media (max-width: 768px) {
+  .mn-form {
+    --fs-title: 1rem;
+    --fs-label: 0.875rem;
+    --fs-input: 0.875rem;
+    --fs-helper: 0.75rem;
+    --input-height: 40px;
+  }
+  
+  .mn-grid {
+    gap: var(--spacing-md);
+  }
+  
+  .mn-form-group input:not([type="file"]):not([type="checkbox"]):not([type="radio"]),
+  .mn-form-group select,
+  .mn-form-group textarea {
+    padding: 8px var(--spacing-md);
+  }
+}
+
+@media (max-width: 480px) {
+  .mn-form {
+    --input-height: 36px;
+  }
+  
+  .mn-grid {
+    gap: 8px;
+  }
+}
+
+/* ===== UTILITÁRIOS ===== */
+.mn-hidden {
+  display: none !important;
+}
+
+.mn-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ===== ACESSIBILIDADE ===== */
+.mn-form-group input:focus,
+.mn-form-group select:focus,
+.mn-form-group textarea:focus {
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+}
+
+/* Melhor contraste para texto de ajuda em foco */
+.mn-form-group:focus-within .helper-text {
+  color: var(--color-text-secondary);
+}
+
+/* ===== ANIMAÇÕES SUTIS ===== */
+@media (prefers-reduced-motion: no-preference) {
+  .mn-form-group input,
+  .mn-form-group select,
+  .mn-form-group textarea,
+  .mn-file-label {
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+  }
+}
+
+/* Desabilita animações se usuário preferir */
+@media (prefers-reduced-motion: reduce) {
+  .mn-form-group input,
+  .mn-form-group select,
+  .mn-form-group textarea,
+  .mn-file-label,
+  .mn-btn {
+    transition: none;
+  }
+}
+
