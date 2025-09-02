@@ -1,157 +1,167 @@
 <?php
-
 namespace ProtocoloMunicipal;
 
 if (!defined('ABSPATH')) exit;
 
+/**
+ * Formulário simples para criação de usuários (opcional).
+ * Mantém compatibilidade ampla (sem "..." variadics, sem features de PHP 7.4+).
+ * Shortcode: [protocolo_usuario]
+ */
+class Usuario
+{
+    public static function boot()
+    {
+        add_shortcode('protocolo_usuario', array(__CLASS__, 'render_form'));
+        add_action('admin_post_pmn_save_usuario', array(__CLASS__, 'handle_submit'));
+        add_action('admin_post_nopriv_pmn_save_usuario', array(__CLASS__, 'require_login_redirect'));
+    }
 
-if (!defined('ABSPATH')) exit;
-class Usuario {
-  public static function render_cadastro_usuario_form() {
-    $core = Core::instance();
-    ...
-  }
+    public static function require_login_redirect()
+    {
+        wp_safe_redirect(wp_login_url());
+        exit;
+    }
+
+    public static function render_form()
+    {
+        if (!is_user_logged_in()) {
+            return '<div class="notice notice-warning"><p>É necessário estar logado para acessar esta página.</p></div>';
+        }
+        if (!current_user_can('create_users') && !current_user_can('promote_users')) {
+            return '<div class="notice notice-error"><p>Você não tem permissão para criar usuários.</p></div>';
+        }
+
+        $action = esc_url(admin_url('admin-post.php'));
+        $nonce  = wp_nonce_field('pmn_save_usuario', '_wpnonce', true, false);
+
+        // Papéis sugeridos (ajuste conforme seu fluxo)
+        $roles = array(
+            'protocolo' => 'Protocolista',
+            'leitor'    => 'Leitor de Protocolos',
+            'subscriber'=> 'Assinante'
+        );
+
+        ob_start();
+        ?>
+        <div class="wrap">
+            <h2>Criar novo usuário</h2>
+            <form method="post" action="<?php echo $action; ?>" class="mn-form">
+                <input type="hidden" name="action" value="pmn_save_usuario" />
+                <?php echo $nonce; ?>
+
+                <p>
+                    <label>Nome completo<br>
+                        <input type="text" name="display_name" required />
+                    </label>
+                </p>
+
+                <p>
+                    <label>Usuário (login, sem espaços)<br>
+                        <input type="text" name="user_login" required />
+                    </label>
+                </p>
+
+                <p>
+                    <label>E-mail<br>
+                        <input type="email" name="user_email" required />
+                    </label>
+                </p>
+
+                <p>
+                    <label>Senha (opcional; em branco para gerar automaticamente)<br>
+                        <input type="password" name="user_pass" autocomplete="new-password" />
+                    </label>
+                </p>
+
+                <p>
+                    <label>Papel<br>
+                        <select name="role">
+                            <?php foreach ($roles as $slug => $label): ?>
+                                <option value="<?php echo esc_attr($slug); ?>"><?php echo esc_html($label); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </label>
+                </p>
+
+                <p>
+                    <button type="submit" class="button button-primary">Criar usuário</button>
+                </p>
+            </form>
+
+            <?php
+            // Mensagens simples via query string (?mn_msg=...)
+            if (isset($_GET['mn_msg'])) {
+                $msg = sanitize_text_field($_GET['mn_msg']);
+                if ($msg === 'ok') {
+                    echo '<div class="updated"><p>Usuário criado com sucesso.</p></div>';
+                } elseif ($msg === 'usuario_ja_existe') {
+                    echo '<div class="notice notice-error"><p>Usuário ou e-mail já existem.</p></div>';
+                } elseif ($msg === 'faltando_campos') {
+                    echo '<div class="notice notice-error"><p>Preencha todos os campos obrigatórios.</p></div>';
+                } elseif ($msg === 'erro') {
+                    echo '<div class="notice notice-error"><p>Ocorreu um erro ao criar o usuário.</p></div>';
+                }
+            }
+            ?>
+        </div>
+        <?php
+        return ob_get_clean();
+    }
+
+    public static function handle_submit()
+    {
+        if (!is_user_logged_in()) {
+            wp_die('É necessário estar logado.');
+        }
+        if (!check_admin_referer('pmn_save_usuario')) {
+            wp_die('Nonce inválido.');
+        }
+        if (!current_user_can('create_users') && !current_user_can('promote_users')) {
+            wp_die('Sem permissão.');
+        }
+
+        $user_login   = isset($_POST['user_login']) ? sanitize_user($_POST['user_login']) : '';
+        $user_email   = isset($_POST['user_email']) ? sanitize_email($_POST['user_email']) : '';
+        $display_name = isset($_POST['display_name']) ? sanitize_text_field($_POST['display_name']) : '';
+        $role         = isset($_POST['role']) ? sanitize_text_field($_POST['role']) : 'subscriber';
+        $user_pass    = isset($_POST['user_pass']) ? (string) $_POST['user_pass'] : '';
+
+        if ($user_login === '' || $user_email === '') {
+            wp_safe_redirect(add_query_arg('mn_msg', 'faltando_campos', wp_get_referer()));
+            exit;
+        }
+
+        if (username_exists($user_login) || email_exists($user_email)) {
+            wp_safe_redirect(add_query_arg('mn_msg', 'usuario_ja_existe', wp_get_referer()));
+            exit;
+        }
+
+        if ($user_pass === '') {
+            $user_pass = wp_generate_password(12, true);
+        }
+
+        $userdata = array(
+            'user_login'   => $user_login,
+            'user_email'   => $user_email,
+            'display_name' => $display_name,
+            'user_pass'    => $user_pass,
+            'role'         => $role,
+        );
+
+        $user_id = wp_insert_user($userdata);
+
+        if (is_wp_error($user_id)) {
+            wp_safe_redirect(add_query_arg('mn_msg', 'erro', wp_get_referer()));
+            exit;
+        }
+
+        // Notificação por e-mail (funciona no WP 5.7+ com segundo parâmetro null)
+        if (function_exists('wp_new_user_notification')) {
+            @wp_new_user_notification($user_id, null, 'both');
+        }
+
+        wp_safe_redirect(add_query_arg('mn_msg', 'ok', wp_get_referer()));
+        exit;
+    }
 }
-
-
-    $msg = '';
-    if (isset($_GET['user_created'])) {
-        $msg = '<div style="color:green;">Usuário cadastrado com sucesso! Você já pode fazer login.</div>';
-    } elseif (isset($_GET['cadastro_erro'])) {
-        $erro = sanitize_text_field($_GET['cadastro_erro']);
-        $msg = '<div style="color:#b00;">Erro: ' . esc_html($erro) . '</div>';
-    }
-
-    ob_start();
-    echo Core::instance()->css_responsivo();
-    echo $msg;
-    ?>
-   <div class="mn-card" style="max-width:440px;margin:30px auto 0;">
-  <form method="post" class="mn-form" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
-    <input type="hidden" name="action" value="cadastro_usuario_front">
-    <?php wp_nonce_field('cadastro_usuario_front_action', 'cadastro_usuario_nonce'); ?>
-
-    <div class="mn-form-group">
-        <label for="user_login">Nome de Usuário</label>
-        <input type="text" id="user_login" name="user_login" required>
-    </div>
-    <div class="mn-form-group">
-        <label for="user_email">E-mail</label>
-        <input type="email" id="user_email" name="user_email" required>
-    </div>
-    <div class="mn-form-group">
-        <label for="user_pass">Senha</label>
-        <input type="password" id="user_pass" name="user_pass" required>
-    </div>
-    <div class="mn-form-group">
-        <label for="user_pass2">Confirmar Senha</label>
-        <input type="password" id="user_pass2" name="user_pass2" required>
-    </div>
-    <div class="mn-form-group">
-        <label for="first_name">Primeiro Nome</label>
-        <input type="text" id="first_name" name="first_name">
-    </div>
-    <div class="mn-form-group">
-        <label for="last_name">Sobrenome</label>
-        <input type="text" id="last_name" name="last_name">
-    </div>
-    <div class="mn-form-group">
-        <label for="display_name">Nome de Exibição</label>
-        <input type="text" id="display_name" name="display_name">
-    </div>
-    <div class="mn-form-group">
-        <label for="role">Perfil</label>
-        <select name="role" id="role" required>
-            <option value="subscriber">Leitor</option>
-            <option value="protocolo">Protocolo</option>
-            <option value="editor">Editor</option>
-            <option value="administrator">Administrador</option>
-        </select>
-    </div>
-    <div class="mn-form-group" style="margin-top:16px;">
-        <button type="submit" class="mn-btn-main">Cadastrar</button>
-    </div>
-  </form>
-</div>
-
-    <style>
-    .mn-btn-main {
-        background: #0854ba !important;
-        color: #fff !important;
-        border: none !important;
-        font-weight: bold !important;
-        border-radius: 8px !important;
-        font-size: 1.1em !important;
-        padding: 14px 0 !important;
-        width: 100% !important;
-        margin-top: 8px;
-        box-shadow: 0 2px 8px #0854ba26;
-        transition: background .22s;
-        letter-spacing: 0.02em;
-    }
-    .mn-btn-main:hover { background: #003b87 !important; }
-    .mn-form-group { margin-bottom: 16px !important; }
-    .mn-form-group label { font-weight:600;margin-bottom:5px;display:block;}
-    @media (max-width: 600px) {
-      .mn-form { padding: 14px 6px 10px 6px; }
-      .mn-form-group { margin-bottom: 12px !important;}
-      .mn-btn-main { font-size: 1em !important; padding: 13px 0 !important;}
-    }
-    </style>
-    <?php
-    return ob_get_clean();
-
-  }
-  public static function handle_cadastro_usuario_front()){
-    $core = Core::instance();
-
-    if (!isset($_POST['cadastro_usuario_nonce']) || !wp_verify_nonce($_POST['cadastro_usuario_nonce'], 'cadastro_usuario_front_action')) {
-        wp_redirect(add_query_arg('cadastro_erro', 'Acesso inválido', wp_get_referer()));
-        exit;
-    }
-
-    $user_login = sanitize_user($_POST['user_login']);
-    $user_email = sanitize_email($_POST['user_email']);
-    $user_pass = $_POST['user_pass'];
-    $user_pass2 = $_POST['user_pass2'];
-    $first_name = sanitize_text_field($_POST['first_name']);
-    $last_name = sanitize_text_field($_POST['last_name']);
-    $display_name = sanitize_text_field($_POST['display_name']);
-    $role = sanitize_text_field($_POST['role']);
-
-    // Validações
-    if ($user_pass !== $user_pass2) {
-        wp_redirect(add_query_arg('cadastro_erro', 'As senhas não coincidem', wp_get_referer()));
-        exit;
-    }
-    if (username_exists($user_login)) {
-        wp_redirect(add_query_arg('cadastro_erro', 'Nome de usuário já cadastrado', wp_get_referer()));
-        exit;
-    }
-    if (email_exists($user_email)) {
-        wp_redirect(add_query_arg('cadastro_erro', 'E-mail já cadastrado', wp_get_referer()));
-        exit;
-    }
-
-    $user_id = wp_create_user($user_login, $user_pass, $user_email);
-    if (is_wp_error($user_id)) {
-        wp_redirect(add_query_arg('cadastro_erro', 'Erro ao criar usuário', wp_get_referer()));
-        exit;
-    }
-
-    // Atualiza campos do WordPress
-    wp_update_user([
-        'ID' => $user_id,
-        'first_name' => $first_name,
-        'last_name' => $last_name,
-        'display_name' => $display_name ?: ($first_name . ' ' . $last_name),
-    ]);
-    $user = new WP_User($user_id);
-    $user->set_role($role);
-
-    wp_redirect(add_query_arg('user_created', '1', wp_get_referer()));
-    exit;
-
-  }
-}
-

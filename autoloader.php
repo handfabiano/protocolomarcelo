@@ -1,7 +1,10 @@
 <?php
 /**
  * PSR-4 Autoloader para o plugin Protocolo Municipal.
- * Salve este arquivo como autoloader.php na raiz do plugin.
+ * Arquivo: autoloader.php (coloque na raiz do plugin).
+ *
+ * - Carrega classes sob o namespace raiz "ProtocoloMunicipal\" a partir de /src
+ * - Silencioso se a classe não existir (padrão WordPress-friendly)
  */
 
 // Impede acesso direto
@@ -15,17 +18,10 @@ if (!defined('PMN_AUTOLOADER_REGISTERED')) {
         $prefix   = 'ProtocoloMunicipal\\';
         $base_dir = __DIR__ . '/src/'; // diretório base para as classes PSR-4
 
-       // ---- Mapeamentos pontuais (arquivos fora do padrão estrito)
-static $alias_map = [
-    'ProtocoloMunicipal\\ListTable' => __DIR__ . '/src/Lista.php',
-    'ProtocoloMunicipal\\Lista'     => __DIR__ . '/src/Lista.php',
-    'ProtocoloMunicipal\\Report'    => __DIR__ . '/src/Report.php',
-];
-
-        // Verifica se a classe usa o namespace esperado
+        // Verifica se a classe usa o prefixo do namespace
         $len = strlen($prefix);
-        if (strncmp($class, $prefix, $len) !== 0) {
-            // não é nossa; deixa outros autoloaders tentarem
+        if (strncmp($prefix, $class, $len) !== 0) {
+            // não é do nosso namespace
             return;
         }
 
@@ -35,6 +31,11 @@ static $alias_map = [
         // Converte separadores de namespace em separadores de diretório e adiciona .php
         $file = $base_dir . str_replace('\\', '/', $relative_class) . '.php';
         $file = preg_replace('#/+#', '/', $file); // normaliza barras
+
+        // Segurança básica: impede subidas de diretório
+        if (strpos($file, '..') !== false) {
+            return;
+        }
 
         // Carrega o arquivo se existir
         if (is_file($file)) {
