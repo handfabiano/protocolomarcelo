@@ -4,489 +4,677 @@ namespace ProtocoloMunicipal;
 if (!defined('ABSPATH')) exit;
 
 /**
- * Sistema de SLA (Service Level Agreement)
+ * Sistema de Notificações Multi-Canal
  * 
- * Funcionalidades:
- * - Cálculo automático de prazos
- * - Escalação automática quando atrasa
- * - Alertas em múltiplos níveis
- * - Relatórios de performance
+ * Canais suportados:
+ * - Email
+ * - Notificações in-app
+ * - Webhook (Slack, Teams, etc)
+ * - SMS (com integração externa)
  * 
  * @version 1.0
  */
-class SLA
+class Notifications
 {
     /**
-     * Prazos padrão por tipo de documento (dias úteis)
+     * Tipos de notificação
      */
-    private const PRAZOS_PADRAO = [
-        'Ofício'        => 5,
-        'Memorando'     => 3,
-        'Requerimento'  => 10,
-        'Relatório'     => 15,
-        'Despacho'      => 2,
-        'Outro'         => 7,
+    private const TIPOS = [
+        'novo_protocolo'     => 'Novo Protocolo Criado',
+        'protocolo_movido'   => 'Protocolo Movimentado',
+        'protocolo_editado'  => 'Protocolo Editado',
+        'atribuido_a_mim'    => 'Protocolo Atribuído a Você',
+        'prazo_amarelo'      => 'Prazo em 50%',
+        'prazo_laranja'      => 'Prazo em 80%',
+        'prazo_vermelho'     => 'Protocolo Atrasado',
+        'comentario'         => 'Novo Comentário',
+        'aprovacao_pendente' => 'Aguardando Aprovação',
+        'aprovado'           => 'Protocolo Aprovado',
+        'rejeitado'          => 'Protocolo Rejeitado',
     ];
 
     /**
-     * Níveis de alerta (% do prazo)
+     * Prioridades
      */
-    private const NIVEIS_ALERTA = [
-        'verde'    => 0,    // 0-50% do prazo
-        'amarelo'  => 50,   // 50-80% do prazo
-        'laranja'  => 80,   // 80-100% do prazo
-        'vermelho' => 100,  // atrasado
+    private const PRIORIDADES = [
+        'baixa'   => 1,
+        'media'   => 2,
+        'alta'    => 3,
+        'urgente' => 4,
     ];
-
-    /**
-     * Horário comercial
-     */
-    private const HORA_INICIO = 8;  // 8h
-    private const HORA_FIM = 18;    // 18h
 
     /**
      * Inicializa hooks
      */
     public static function boot(): void
     {
-        // Cálculo automático de prazo ao salvar
-        add_action('save_post_protocolo', [__CLASS__, 'calculate_deadline'], 20);
+        // Cria tabela de notificações
+        register_activation_hook(PMN_FILE, [__CLASS__, 'create_table']);
         
-        // Cron diário para verificar prazos
-        add_action('pmn_check_deadlines', [__CLASS__, 'check_all_deadlines']);
+        // Hooks de eventos
+        add_action('pmn_protocolo_criado', [__CLASS__, 'on_protocolo_criado'], 10, 2);
+        add_action('pmn_protocolo_movimentado', [__CLASS__, 'on_protocolo_movimentado'], 10, 2);
+        add_action('pmn_protocolo_editado', [__CLASS__, 'on_protocolo_editado'], 10, 2);
         
-        // Registra cron
-        if (!wp_next_scheduled('pmn_check_deadlines')) {
-            wp_schedule_event(strtotime('08:00:00'), 'daily', 'pmn_check_deadlines');
-        }
+        // AJAX
+        add_action('wp_ajax_pmn_get_notifications', [__CLASS__, 'ajax_get_notifications']);
+        add_action('wp_ajax_pmn_mark_read', [__CLASS__, 'ajax_mark_read']);
+        add_action('wp_ajax_pmn_mark_all_read', [__CLASS__, 'ajax_mark_all_read']);
         
-        // API endpoints
-        add_action('rest_api_init', [__CLASS__, 'register_api_routes']);
+        // Badge de notificações na admin bar
+        add_action('admin_bar_menu', [__CLASS__, 'add_admin_bar_badge'], 100);
+        
+        // Assets
+        add_action('wp_enqueue_scripts', [__CLASS__, 'enqueue_assets']);
     }
 
     /**
-     * Calcula e salva prazo limite do protocolo
+     * Cria tabela de notificações
      */
-    public static function calculate_deadline(int $post_id): void
+    public static function create_table(): void
     {
-        if (wp_is_post_revision($post_id)) return;
+        global $wpdb;
+        $table = $wpdb->prefix . 'pmn_notifications';
         
-        $tipo_doc = get_post_meta($post_id, 'tipo_documento', true);
-        $prazo_manual = (int) get_post_meta($post_id, 'prazo', true);
-        $data_abertura = get_post_meta($post_id, 'data', true);
+        $sql = "CREATE TABLE IF NOT EXISTS {$table} (
+            id BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT,
+            user_id BIGINT(20) UNSIGNED NOT NULL,
+            protocolo_id BIGINT(20) UNSIGNED NOT NULL,
+            tipo VARCHAR(50) NOT NULL,
+            titulo VARCHAR(255) NOT NULL,
+            mensagem TEXT,
+            prioridade TINYINT(1) DEFAULT 2,
+            lida TINYINT(1) DEFAULT 0,
+            lida_em DATETIME DEFAULT NULL,
+            criada_em DATETIME NOT NULL,
+            dados_extra LONGTEXT,
+            PRIMARY KEY (id),
+            KEY user_id (user_id),
+            KEY protocolo_id (protocolo_id),
+            KEY lida (lida),
+            KEY criada_em (criada_em)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
         
-        if (!$data_abertura) {
-            $data_abertura = get_post_time('Y-m-d', false, $post_id);
-        }
-        
-        // Prazo: manual > padrão do tipo > 7 dias
-        $prazo_dias = $prazo_manual ?: (self::PRAZOS_PADRAO[$tipo_doc] ?? 7);
-        
-        // Calcula data limite (dias ÚTEIS)
-        $data_limite = self::add_business_days($data_abertura, $prazo_dias);
-        
-        // Salva
-        update_post_meta($post_id, 'data_limite', $data_limite);
-        update_post_meta($post_id, 'prazo_dias_uteis', $prazo_dias);
-        
-        // Calcula nível de alerta
-        self::update_alert_level($post_id);
+        require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+        dbDelta($sql);
     }
 
     /**
-     * Adiciona dias úteis a uma data
+     * Envia notificação
+     * 
+     * @param int $protocolo_id ID do protocolo
+     * @param array $args Argumentos
+     * @return bool Sucesso
      */
-    private static function add_business_days(string $start_date, int $days): string
+    public static function send(int $protocolo_id, array $args): bool
     {
-        try {
-            $date = new \DateTime($start_date);
-            $added = 0;
+        $defaults = [
+            'tipo' => 'geral',
+            'titulo' => '',
+            'mensagem' => '',
+            'prioridade' => 'media',
+            'destinatarios' => [], // array de user_ids ou emails
+            'canais' => ['inapp', 'email'], // quais canais usar
+            'dados_extra' => [],
+        ];
+        
+        $args = wp_parse_args($args, $defaults);
+        
+        // Resolve destinatários
+        $user_ids = self::resolve_recipients($args['destinatarios']);
+        
+        if (empty($user_ids)) {
+            return false;
+        }
+        
+        $success = true;
+        
+        foreach ($user_ids as $user_id) {
+            // Verifica preferências do usuário
+            $preferences = self::get_user_preferences($user_id);
             
-            while ($added < $days) {
-                $date->modify('+1 day');
-                
-                // Pula finais de semana
-                if ($date->format('N') < 6) { // 1=segunda, 5=sexta
-                    // Verifica se não é feriado
-                    if (!self::is_holiday($date->format('Y-m-d'))) {
-                        $added++;
-                    }
-                }
+            // In-app
+            if (in_array('inapp', $args['canais'], true) && $preferences['inapp']) {
+                self::send_inapp($user_id, $protocolo_id, $args);
             }
             
-            return $date->format('Y-m-d');
+            // Email
+            if (in_array('email', $args['canais'], true) && $preferences['email']) {
+                $sent = self::send_email($user_id, $protocolo_id, $args);
+                if (!$sent) $success = false;
+            }
             
-        } catch (\Exception $e) {
-            error_log('Erro ao calcular prazo: ' . $e->getMessage());
-            return date('Y-m-d', strtotime("+{$days} days", strtotime($start_date)));
+            // Webhook
+            if (in_array('webhook', $args['canais'], true) && $preferences['webhook']) {
+                self::send_webhook($user_id, $protocolo_id, $args);
+            }
         }
+        
+        return $success;
     }
 
     /**
-     * Verifica se é feriado
+     * Resolve destinatários (emails/IDs para user_ids)
      */
-    private static function is_holiday(string $date): bool
+    private static function resolve_recipients(array $recipients): array
     {
-        // Busca feriados cadastrados
-        $feriados = get_option('pmn_feriados', []);
+        $user_ids = [];
         
-        if (in_array($date, $feriados, true)) {
-            return true;
+        foreach ($recipients as $recipient) {
+            if (is_numeric($recipient)) {
+                // Já é user_id
+                $user_ids[] = (int) $recipient;
+            } elseif (is_email($recipient)) {
+                // É email, busca user
+                $user = get_user_by('email', $recipient);
+                if ($user) {
+                    $user_ids[] = $user->ID;
+                }
+            }
         }
         
-        // Feriados nacionais fixos
-        $year = date('Y', strtotime($date));
-        $feriados_fixos = [
-            "{$year}-01-01", // Ano Novo
-            "{$year}-04-21", // Tiradentes
-            "{$year}-05-01", // Trabalho
-            "{$year}-09-07", // Independência
-            "{$year}-10-12", // N. Sra. Aparecida
-            "{$year}-11-02", // Finados
-            "{$year}-11-15", // Proclamação
-            "{$year}-12-25", // Natal
+        return array_unique($user_ids);
+    }
+
+    /**
+     * Preferências de notificação do usuário
+     */
+    private static function get_user_preferences(int $user_id): array
+    {
+        $defaults = [
+            'inapp' => true,
+            'email' => true,
+            'webhook' => false,
         ];
         
-        return in_array($date, $feriados_fixos, true);
+        $saved = get_user_meta($user_id, 'pmn_notification_prefs', true);
+        
+        return is_array($saved) ? array_merge($defaults, $saved) : $defaults;
     }
 
     /**
-     * Atualiza nível de alerta do protocolo
+     * Envia notificação in-app
      */
-    public static function update_alert_level(int $post_id): void
+    private static function send_inapp(int $user_id, int $protocolo_id, array $args): bool
     {
-        $status = get_post_meta($post_id, 'status', true);
+        global $wpdb;
+        $table = $wpdb->prefix . 'pmn_notifications';
         
-        // Se concluído, sem alerta
-        if ($status === 'Concluído') {
-            update_post_meta($post_id, 'nivel_alerta', 'concluido');
-            return;
-        }
+        $result = $wpdb->insert(
+            $table,
+            [
+                'user_id' => $user_id,
+                'protocolo_id' => $protocolo_id,
+                'tipo' => $args['tipo'],
+                'titulo' => $args['titulo'],
+                'mensagem' => $args['mensagem'],
+                'prioridade' => self::PRIORIDADES[$args['prioridade']] ?? 2,
+                'criada_em' => current_time('mysql'),
+                'dados_extra' => maybe_serialize($args['dados_extra']),
+            ],
+            ['%d', '%d', '%s', '%s', '%s', '%d', '%s', '%s']
+        );
         
-        $data_limite = get_post_meta($post_id, 'data_limite', true);
-        if (!$data_limite) {
-            update_post_meta($post_id, 'nivel_alerta', 'sem_prazo');
-            return;
-        }
-        
-        $hoje = current_time('Y-m-d');
-        $percentual = self::get_deadline_percentage($post_id);
-        
-        // Define nível baseado no percentual
-        $nivel = 'verde';
-        if ($percentual >= 100) {
-            $nivel = 'vermelho';
-        } elseif ($percentual >= 80) {
-            $nivel = 'laranja';
-        } elseif ($percentual >= 50) {
-            $nivel = 'amarelo';
-        }
-        
-        update_post_meta($post_id, 'nivel_alerta', $nivel);
-        update_post_meta($post_id, 'percentual_prazo', $percentual);
-        
-        // Dispara notificações se necessário
-        self::trigger_alerts($post_id, $nivel, $percentual);
+        return $result !== false;
     }
 
     /**
-     * Calcula percentual do prazo decorrido
+     * Envia notificação por email
      */
-    public static function get_deadline_percentage(int $post_id): float
+    private static function send_email(int $user_id, int $protocolo_id, array $args): bool
     {
-        $data_abertura = get_post_meta($post_id, 'data', true);
-        $data_limite = get_post_meta($post_id, 'data_limite', true);
-        
-        if (!$data_abertura || !$data_limite) return 0;
-        
-        try {
-            $dt_abertura = new \DateTime($data_abertura);
-            $dt_limite = new \DateTime($data_limite);
-            $dt_hoje = new \DateTime(current_time('Y-m-d'));
-            
-            $total_dias = $dt_abertura->diff($dt_limite)->days;
-            $dias_decorridos = $dt_abertura->diff($dt_hoje)->days;
-            
-            if ($total_dias == 0) return 100;
-            
-            return min(100, ($dias_decorridos / $total_dias) * 100);
-            
-        } catch (\Exception $e) {
-            return 0;
-        }
-    }
-
-    /**
-     * Dispara alertas conforme nível
-     */
-    private static function trigger_alerts(int $post_id, string $nivel, float $percentual): void
-    {
-        // Verifica se já alertou hoje
-        $ultimo_alerta = get_post_meta($post_id, 'ultimo_alerta_' . $nivel, true);
-        if ($ultimo_alerta === current_time('Y-m-d')) {
-            return; // já alertou hoje
+        $user = get_userdata($user_id);
+        if (!$user || !$user->user_email) {
+            return false;
         }
         
-        // Configura alertas
-        $alertas = [
-            'amarelo' => [
-                'titulo' => 'Protocolo próximo do prazo (50%)',
-                'prioridade' => 'media',
-            ],
-            'laranja' => [
-                'titulo' => 'Protocolo próximo do vencimento (80%)',
-                'prioridade' => 'alta',
-            ],
-            'vermelho' => [
-                'titulo' => 'PROTOCOLO ATRASADO',
-                'prioridade' => 'urgente',
-            ],
+        $protocolo_numero = get_the_title($protocolo_id);
+        $protocolo_url = get_permalink($protocolo_id);
+        
+        // Template do email
+        $subject = sprintf(
+            '[Protocolo %s] %s',
+            $protocolo_numero,
+            $args['titulo']
+        );
+        
+        $message = self::get_email_template([
+            'user_name' => $user->display_name,
+            'titulo' => $args['titulo'],
+            'mensagem' => $args['mensagem'],
+            'protocolo_numero' => $protocolo_numero,
+            'protocolo_url' => $protocolo_url,
+            'prioridade' => $args['prioridade'],
+        ]);
+        
+        $headers = [
+            'Content-Type: text/html; charset=UTF-8',
+            'From: Sistema de Protocolos <' . get_option('admin_email') . '>',
         ];
         
-        if (!isset($alertas[$nivel])) return;
-        
-        $alerta = $alertas[$nivel];
-        
-        // Envia notificação
-        Notifications::send($post_id, [
-            'tipo' => 'prazo_' . $nivel,
-            'titulo' => $alerta['titulo'],
-            'mensagem' => sprintf(
-                'Protocolo %s está em %s (%.0f%% do prazo)',
-                get_the_title($post_id),
-                $nivel,
-                $percentual
-            ),
-            'prioridade' => $alerta['prioridade'],
-            'destinatarios' => self::get_alert_recipients($post_id, $nivel),
-        ]);
-        
-        // Registra que alertou
-        update_post_meta($post_id, 'ultimo_alerta_' . $nivel, current_time('Y-m-d'));
-        
-        // Escalação automática se vermelho
-        if ($nivel === 'vermelho') {
-            self::auto_escalate($post_id);
+        // Adiciona prioridade ao header se urgente
+        if ($args['prioridade'] === 'urgente') {
+            $headers[] = 'X-Priority: 1 (Highest)';
+            $headers[] = 'X-MSMail-Priority: High';
+            $headers[] = 'Importance: High';
         }
+        
+        return wp_mail($user->user_email, $subject, $message, $headers);
     }
 
     /**
-     * Destinatários do alerta conforme nível
+     * Template HTML do email
      */
-    private static function get_alert_recipients(int $post_id, string $nivel): array
+    private static function get_email_template(array $data): string
     {
-        $responsavel_email = get_post_meta($post_id, 'responsavel_email', true);
-        $recipients = [];
+        $cor_prioridade = [
+            'baixa' => '#10b981',
+            'media' => '#f59e0b',
+            'alta' => '#f97316',
+            'urgente' => '#ef4444',
+        ];
         
-        if ($responsavel_email) {
-            $recipients[] = $responsavel_email;
-        }
+        $cor = $cor_prioridade[$data['prioridade']] ?? '#6b7280';
         
-        // Escalação: amarelo=responsável, laranja=+supervisor, vermelho=+gestor
-        if (in_array($nivel, ['laranja', 'vermelho'], true)) {
-            $supervisor = get_option('pmn_email_supervisor');
-            if ($supervisor) $recipients[] = $supervisor;
-        }
-        
-        if ($nivel === 'vermelho') {
-            $gestor = get_option('pmn_email_gestor');
-            if ($gestor) $recipients[] = $gestor;
-        }
-        
-        return array_unique($recipients);
+        ob_start();
+        ?>
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        </head>
+        <body style="margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f3f4f6">
+            <table width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4f6;padding:40px 20px">
+                <tr>
+                    <td align="center">
+                        <table width="600" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.1)">
+                            <!-- Header com cor de prioridade -->
+                            <tr>
+                                <td style="background:<?php echo esc_attr($cor); ?>;padding:24px;text-align:center">
+                                    <h1 style="margin:0;color:#fff;font-size:24px;font-weight:700">
+                                        🔔 Sistema de Protocolos
+                                    </h1>
+                                </td>
+                            </tr>
+                            
+                            <!-- Conteúdo -->
+                            <tr>
+                                <td style="padding:32px">
+                                    <p style="margin:0 0 16px;color:#374151;font-size:16px">
+                                        Olá, <strong><?php echo esc_html($data['user_name']); ?></strong>
+                                    </p>
+                                    
+                                    <div style="background:#f9fafb;border-left:4px solid <?php echo esc_attr($cor); ?>;padding:16px;margin:24px 0">
+                                        <h2 style="margin:0 0 12px;color:#1f2937;font-size:18px">
+                                            <?php echo esc_html($data['titulo']); ?>
+                                        </h2>
+                                        <p style="margin:0;color:#4b5563;line-height:1.6">
+                                            <?php echo nl2br(esc_html($data['mensagem'])); ?>
+                                        </p>
+                                    </div>
+                                    
+                                    <table width="100%" cellpadding="0" cellspacing="0" style="margin:24px 0">
+                                        <tr>
+                                            <td style="color:#6b7280;font-size:14px;padding:8px 0">
+                                                <strong>Protocolo:</strong>
+                                            </td>
+                                            <td style="color:#1f2937;font-size:14px;padding:8px 0;text-align:right">
+                                                <?php echo esc_html($data['protocolo_numero']); ?>
+                                            </td>
+                                        </tr>
+                                        <tr>
+                                            <td style="color:#6b7280;font-size:14px;padding:8px 0">
+                                                <strong>Prioridade:</strong>
+                                            </td>
+                                            <td style="color:<?php echo esc_attr($cor); ?>;font-size:14px;padding:8px 0;text-align:right;font-weight:700;text-transform:uppercase">
+                                                <?php echo esc_html($data['prioridade']); ?>
+                                            </td>
+                                        </tr>
+                                    </table>
+                                    
+                                    <div style="text-align:center;margin:32px 0">
+                                        <a href="<?php echo esc_url($data['protocolo_url']); ?>" 
+                                           style="display:inline-block;background:<?php echo esc_attr($cor); ?>;color:#fff;text-decoration:none;padding:14px 32px;border-radius:8px;font-weight:600;font-size:16px">
+                                            Ver Protocolo Completo
+                                        </a>
+                                    </div>
+                                    
+                                    <p style="margin:24px 0 0;color:#9ca3af;font-size:13px;text-align:center">
+                                        Esta é uma notificação automática do Sistema de Protocolos.<br>
+                                        Para alterar suas preferências, acesse as configurações da sua conta.
+                                    </p>
+                                </td>
+                            </tr>
+                            
+                            <!-- Footer -->
+                            <tr>
+                                <td style="background:#f9fafb;padding:20px;text-align:center;border-top:1px solid #e5e7eb">
+                                    <p style="margin:0;color:#6b7280;font-size:12px">
+                                        © <?php echo date('Y'); ?> Sistema de Protocolos Municipal
+                                    </p>
+                                </td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+            </table>
+        </body>
+        </html>
+        <?php
+        return ob_get_clean();
     }
 
     /**
-     * Escalação automática quando atrasado
+     * Envia para webhook (Slack, Teams, etc)
      */
-    private static function auto_escalate(int $post_id): void
+    private static function send_webhook(int $user_id, int $protocolo_id, array $args): bool
     {
-        $dias_atraso = self::get_days_overdue($post_id);
+        $webhook_url = get_user_meta($user_id, 'pmn_webhook_url', true);
         
-        if ($dias_atraso <= 0) return;
-        
-        // Adiciona na meta
-        update_post_meta($post_id, 'dias_atraso', $dias_atraso);
-        update_post_meta($post_id, 'escalado_em', current_time('mysql'));
-        
-        // Muda prioridade para Alta se não for
-        $prioridade = get_post_meta($post_id, 'prioridade', true);
-        if ($prioridade !== 'Alta') {
-            update_post_meta($post_id, 'prioridade', 'Alta');
-            update_post_meta($post_id, 'prioridade_anterior', $prioridade);
+        if (!$webhook_url) {
+            return false;
         }
         
-        // Log de auditoria
-        Audit::log($post_id, 'escalacao_automatica', [
-            'dias_atraso' => $dias_atraso,
-            'motivo' => 'Prazo excedido',
-        ]);
-    }
-
-    /**
-     * Calcula dias de atraso
-     */
-    public static function get_days_overdue(int $post_id): int
-    {
-        $data_limite = get_post_meta($post_id, 'data_limite', true);
-        if (!$data_limite) return 0;
+        $protocolo_numero = get_the_title($protocolo_id);
+        $protocolo_url = get_permalink($protocolo_id);
         
-        try {
-            $dt_limite = new \DateTime($data_limite);
-            $dt_hoje = new \DateTime(current_time('Y-m-d'));
-            
-            if ($dt_hoje <= $dt_limite) return 0;
-            
-            return $dt_hoje->diff($dt_limite)->days;
-            
-        } catch (\Exception $e) {
-            return 0;
-        }
-    }
-
-    /**
-     * Verifica todos os protocolos (cron diário)
-     */
-    public static function check_all_deadlines(): void
-    {
-        $query = new \WP_Query([
-            'post_type' => 'protocolo',
-            'post_status' => 'publish',
-            'posts_per_page' => -1,
-            'meta_query' => [
+        // Formato Slack
+        $payload = [
+            'text' => $args['titulo'],
+            'blocks' => [
                 [
-                    'key' => 'status',
-                    'value' => 'Concluído',
-                    'compare' => '!=',
+                    'type' => 'header',
+                    'text' => [
+                        'type' => 'plain_text',
+                        'text' => '🔔 ' . $args['titulo'],
+                    ],
+                ],
+                [
+                    'type' => 'section',
+                    'text' => [
+                        'type' => 'mrkdwn',
+                        'text' => $args['mensagem'],
+                    ],
+                ],
+                [
+                    'type' => 'section',
+                    'fields' => [
+                        [
+                            'type' => 'mrkdwn',
+                            'text' => '*Protocolo:*\n' . $protocolo_numero,
+                        ],
+                        [
+                            'type' => 'mrkdwn',
+                            'text' => '*Prioridade:*\n' . ucfirst($args['prioridade']),
+                        ],
+                    ],
+                ],
+                [
+                    'type' => 'actions',
+                    'elements' => [
+                        [
+                            'type' => 'button',
+                            'text' => [
+                                'type' => 'plain_text',
+                                'text' => 'Ver Protocolo',
+                            ],
+                            'url' => $protocolo_url,
+                            'style' => 'primary',
+                        ],
+                    ],
                 ],
             ],
+        ];
+        
+        $response = wp_remote_post($webhook_url, [
+            'headers' => ['Content-Type' => 'application/json'],
+            'body' => wp_json_encode($payload),
+            'timeout' => 10,
         ]);
         
-        foreach ($query->posts as $post) {
-            self::update_alert_level($post->ID);
+        return !is_wp_error($response);
+    }
+
+    /**
+     * Event: Novo protocolo criado
+     */
+    public static function on_protocolo_criado(int $post_id, array $data): void
+    {
+        $responsavel_email = $data['responsavel_email'] ?? '';
+        
+        if (!$responsavel_email) {
+            return;
         }
         
-        wp_reset_postdata();
+        self::send($post_id, [
+            'tipo' => 'novo_protocolo',
+            'titulo' => 'Novo protocolo criado',
+            'mensagem' => sprintf(
+                'Um novo protocolo foi criado: %s',
+                get_the_title($post_id)
+            ),
+            'prioridade' => 'media',
+            'destinatarios' => [$responsavel_email],
+        ]);
+    }
+
+    /**
+     * Event: Protocolo movimentado
+     */
+    public static function on_protocolo_movimentado(int $post_id, array $data): void
+    {
+        $responsavel_email = get_post_meta($post_id, 'responsavel_email', true);
         
-        error_log(sprintf(
-            'PMN SLA: Verificados %d protocolos às %s',
-            $query->found_posts,
-            current_time('H:i:s')
+        if (!$responsavel_email) {
+            return;
+        }
+        
+        self::send($post_id, [
+            'tipo' => 'protocolo_movido',
+            'titulo' => 'Protocolo movimentado',
+            'mensagem' => sprintf(
+                'Protocolo %s foi movimentado para: %s',
+                get_the_title($post_id),
+                $data['destino'] ?? 'não informado'
+            ),
+            'prioridade' => 'media',
+            'destinatarios' => [$responsavel_email],
+        ]);
+    }
+
+    /**
+     * Event: Protocolo editado
+     */
+    public static function on_protocolo_editado(int $post_id, array $data): void
+    {
+        // Implementar conforme necessidade
+    }
+
+    /**
+     * AJAX: Busca notificações do usuário
+     */
+    public static function ajax_get_notifications(): void
+    {
+        check_ajax_referer('pmn_notifications_nonce', 'nonce');
+        
+        $user_id = get_current_user_id();
+        if (!$user_id) {
+            wp_send_json_error(['message' => 'Não autenticado']);
+        }
+        
+        $limit = (int) ($_POST['limit'] ?? 20);
+        $only_unread = !empty($_POST['only_unread']);
+        
+        $notifications = self::get_user_notifications($user_id, $limit, $only_unread);
+        
+        wp_send_json_success([
+            'notifications' => $notifications,
+            'unread_count' => self::get_unread_count($user_id),
+        ]);
+    }
+
+    /**
+     * Busca notificações do usuário
+     */
+    public static function get_user_notifications(int $user_id, int $limit = 20, bool $only_unread = false): array
+    {
+        global $wpdb;
+        $table = $wpdb->prefix . 'pmn_notifications';
+        
+        $where = $wpdb->prepare("user_id = %d", $user_id);
+        
+        if ($only_unread) {
+            $where .= " AND lida = 0";
+        }
+        
+        $sql = "
+        SELECT * FROM {$table}
+        WHERE {$where}
+        ORDER BY prioridade DESC, criada_em DESC
+        LIMIT %d
+        ";
+        
+        $results = $wpdb->get_results($wpdb->prepare($sql, $limit));
+        
+        return array_map(function($row) {
+            $row->dados_extra = maybe_unserialize($row->dados_extra);
+            return $row;
+        }, $results);
+    }
+
+    /**
+     * Conta notificações não lidas
+     */
+    public static function get_unread_count(int $user_id): int
+    {
+        global $wpdb;
+        $table = $wpdb->prefix . 'pmn_notifications';
+        
+        return (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM {$table} WHERE user_id = %d AND lida = 0",
+            $user_id
         ));
     }
 
     /**
-     * Relatório de SLA
+     * AJAX: Marca como lida
      */
-    public static function get_sla_report(): array
+    public static function ajax_mark_read(): void
     {
-        global $wpdb;
+        check_ajax_referer('pmn_notifications_nonce', 'nonce');
         
-        // Protocolos por nível de alerta
-        $sql = "
-        SELECT 
-            pm.meta_value as nivel,
-            COUNT(*) as total
-        FROM {$wpdb->posts} p
-        INNER JOIN {$wpdb->postmeta} pm ON (p.ID = pm.post_id AND pm.meta_key = 'nivel_alerta')
-        INNER JOIN {$wpdb->postmeta} pm_status ON (p.ID = pm_status.post_id AND pm_status.meta_key = 'status')
-        WHERE p.post_type = 'protocolo'
-        AND p.post_status = 'publish'
-        AND pm_status.meta_value != 'Concluído'
-        GROUP BY pm.meta_value
-        ";
+        $notification_id = (int) ($_POST['notification_id'] ?? 0);
+        $user_id = get_current_user_id();
         
-        $por_nivel = $wpdb->get_results($sql);
-        
-        // Taxa de cumprimento
-        $concluidos_no_prazo = $wpdb->get_var("
-            SELECT COUNT(*) 
-            FROM {$wpdb->posts} p
-            INNER JOIN {$wpdb->postmeta} pm_status ON (p.ID = pm_status.post_id AND pm_status.meta_key = 'status')
-            INNER JOIN {$wpdb->postmeta} pm_conclusao ON (p.ID = pm_conclusao.post_id AND pm_conclusao.meta_key = 'data_conclusao')
-            INNER JOIN {$wpdb->postmeta} pm_limite ON (p.ID = pm_limite.post_id AND pm_limite.meta_key = 'data_limite')
-            WHERE p.post_type = 'protocolo'
-            AND pm_status.meta_value = 'Concluído'
-            AND pm_conclusao.meta_value <= pm_limite.meta_value
-            AND pm_conclusao.meta_value >= DATE_SUB(NOW(), INTERVAL 30 DAY)
-        ");
-        
-        $total_concluidos = $wpdb->get_var("
-            SELECT COUNT(*) 
-            FROM {$wpdb->posts} p
-            INNER JOIN {$wpdb->postmeta} pm ON (p.ID = pm.post_id AND pm.meta_key = 'status')
-            WHERE p.post_type = 'protocolo'
-            AND pm.meta_value = 'Concluído'
-            AND p.post_modified >= DATE_SUB(NOW(), INTERVAL 30 DAY)
-        ");
-        
-        $taxa_cumprimento = $total_concluidos > 0 
-            ? round(($concluidos_no_prazo / $total_concluidos) * 100, 2)
-            : 0;
-        
-        return [
-            'por_nivel' => $por_nivel,
-            'taxa_cumprimento' => $taxa_cumprimento,
-            'concluidos_no_prazo' => (int) $concluidos_no_prazo,
-            'total_concluidos' => (int) $total_concluidos,
-            'timestamp' => current_time('c'),
-        ];
-    }
-
-    /**
-     * Registra rotas da API REST
-     */
-    public static function register_api_routes(): void
-    {
-        register_rest_route('pmn/v1', '/sla/(?P<id>\d+)', [
-            'methods' => 'GET',
-            'callback' => [__CLASS__, 'api_get_protocol_sla'],
-            'permission_callback' => function() {
-                return current_user_can('read');
-            },
-        ]);
-        
-        register_rest_route('pmn/v1', '/sla/report', [
-            'methods' => 'GET',
-            'callback' => [__CLASS__, 'api_get_sla_report'],
-            'permission_callback' => function() {
-                return current_user_can('edit_protocolos');
-            },
-        ]);
-    }
-
-    /**
-     * API: Dados de SLA de um protocolo
-     */
-    public static function api_get_protocol_sla(\WP_REST_Request $request): \WP_REST_Response
-    {
-        $post_id = (int) $request['id'];
-        
-        if (!$post_id || get_post_type($post_id) !== 'protocolo') {
-            return new \WP_REST_Response(['error' => 'Protocolo não encontrado'], 404);
+        if (!$notification_id || !$user_id) {
+            wp_send_json_error();
         }
         
-        $data = [
-            'id' => $post_id,
-            'numero' => get_the_title($post_id),
-            'data_abertura' => get_post_meta($post_id, 'data', true),
-            'data_limite' => get_post_meta($post_id, 'data_limite', true),
-            'prazo_dias' => (int) get_post_meta($post_id, 'prazo_dias_uteis', true),
-            'nivel_alerta' => get_post_meta($post_id, 'nivel_alerta', true),
-            'percentual_prazo' => (float) get_post_meta($post_id, 'percentual_prazo', true),
-            'dias_atraso' => self::get_days_overdue($post_id),
-            'status' => get_post_meta($post_id, 'status', true),
-        ];
+        global $wpdb;
+        $table = $wpdb->prefix . 'pmn_notifications';
         
-        return new \WP_REST_Response($data, 200);
+        $result = $wpdb->update(
+            $table,
+            [
+                'lida' => 1,
+                'lida_em' => current_time('mysql'),
+            ],
+            [
+                'id' => $notification_id,
+                'user_id' => $user_id,
+            ],
+            ['%d', '%s'],
+            ['%d', '%d']
+        );
+        
+        wp_send_json_success([
+            'unread_count' => self::get_unread_count($user_id),
+        ]);
     }
 
     /**
-     * API: Relatório de SLA
+     * AJAX: Marca todas como lidas
      */
-    public static function api_get_sla_report(): \WP_REST_Response
+    public static function ajax_mark_all_read(): void
     {
-        $report = self::get_sla_report();
-        return new \WP_REST_Response($report, 200);
+        check_ajax_referer('pmn_notifications_nonce', 'nonce');
+        
+        $user_id = get_current_user_id();
+        if (!$user_id) {
+            wp_send_json_error();
+        }
+        
+        global $wpdb;
+        $table = $wpdb->prefix . 'pmn_notifications';
+        
+        $wpdb->update(
+            $table,
+            [
+                'lida' => 1,
+                'lida_em' => current_time('mysql'),
+            ],
+            ['user_id' => $user_id],
+            ['%d', '%s'],
+            ['%d']
+        );
+        
+        wp_send_json_success([
+            'unread_count' => 0,
+        ]);
+    }
+
+    /**
+     * Badge de notificações na admin bar
+     */
+    public static function add_admin_bar_badge(\WP_Admin_Bar $wp_admin_bar): void
+    {
+        if (!is_user_logged_in()) return;
+        
+        $user_id = get_current_user_id();
+        $count = self::get_unread_count($user_id);
+        
+        if ($count == 0) return;
+        
+        $wp_admin_bar->add_node([
+            'id' => 'pmn-notifications',
+            'title' => sprintf(
+                '<span class="pmn-notif-badge">🔔 <span class="pmn-notif-count">%d</span></span>',
+                $count
+            ),
+            'href' => '#',
+            'meta' => [
+                'class' => 'pmn-notifications-trigger',
+            ],
+        ]);
+    }
+
+    /**
+     * Enfileira assets
+     */
+    public static function enqueue_assets(): void
+    {
+        if (!is_user_logged_in()) return;
+        
+        wp_enqueue_style(
+            'pmn-notifications',
+            PMN_ASSETS_URL . 'css/notifications.css',
+            [],
+            PMN_VERSION
+        );
+        
+        wp_enqueue_script(
+            'pmn-notifications',
+            PMN_ASSETS_URL . 'js/notifications.js',
+            ['jquery'],
+            PMN_VERSION,
+            true
+        );
+        
+        wp_localize_script('pmn-notifications', 'pmnNotifications', [
+            'ajaxUrl' => admin_url('admin-ajax.php'),
+            'nonce' => wp_create_nonce('pmn_notifications_nonce'),
+            'userId' => get_current_user_id(),
+        ]);
     }
 }
